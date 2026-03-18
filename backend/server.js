@@ -21,7 +21,9 @@ app.use(express.json());
 
 let githubToken = process.env.GITHUB_TOKEN ?? "";
 let githubProjectUrl = process.env.GITHUB_PROJECT_URL ?? "";
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "300000", 10);
+let pollIntervalMs = parseInt(process.env.POLL_INTERVAL_MS ?? "300000", 10);
+
+let pollTimerHandle = null;
 
 // ─── Parse GitHub project URL ─────────────────────────────────────────────────
 function parseProjectUrl(url) {
@@ -310,15 +312,24 @@ app.get("/api/config", (_req, res) => {
   res.json({
     configured: !!githubToken && !!githubProjectUrl,
     projectUrl: githubProjectUrl,
+    pollIntervalMs,
   });
 });
 
 app.post("/api/config", async (req, res) => {
-  const { token, projectUrl: url } = req.body;
+  const { token, projectUrl: url, pollIntervalMs: newInterval } = req.body;
   if (token) githubToken = String(token).trim();
   if (url) githubProjectUrl = String(url).trim();
+  if (newInterval != null) {
+    const parsed = parseInt(String(newInterval), 10);
+    if (!isNaN(parsed) && parsed >= 5000) {
+      pollIntervalMs = parsed;
+      clearInterval(pollTimerHandle);
+      pollTimerHandle = setInterval(fetchGitHubProject, pollIntervalMs);
+    }
+  }
   await fetchGitHubProject();
-  res.json({ ok: true, error: fetchError, lastUpdated });
+  res.json({ ok: true, error: fetchError, lastUpdated, pollIntervalMs });
 });
 
 app.post("/api/refresh", async (_req, res) => {
@@ -353,7 +364,7 @@ io.on("connection", (socket) => {
 // ─── Periodic polling ─────────────────────────────────────────────────────────
 
 fetchGitHubProject();
-setInterval(fetchGitHubProject, POLL_INTERVAL_MS);
+pollTimerHandle = setInterval(fetchGitHubProject, pollIntervalMs);
 
 // ─── Start server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
