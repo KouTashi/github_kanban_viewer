@@ -5,20 +5,25 @@ import React, {
   useState,
 } from "react";
 import { io, Socket } from "socket.io-client";
-import {
-  DragDropContext,
-  Droppable,
-  Draggable,
-  DropResult,
-} from "@hello-pangea/dnd";
 import "./styles.css";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Label {
+  name: string;
+  color: string; // hex including #
+}
+
+interface Assignee {
+  login: string;
+  avatarUrl: string;
+}
 
 interface Column {
   id: string;
   title: string;
   order: number;
+  color?: string | null; // GitHub Projects status color enum (e.g. "GREEN")
 }
 
 interface Card {
@@ -26,171 +31,107 @@ interface Card {
   columnId: string;
   title: string;
   description: string;
-  label: string;
-  assignee: string;
+  labels: Label[];
+  assignees: Assignee[];
+  number?: number | null;
+  url?: string | null;
+  contentType?: "Issue" | "PullRequest" | "DraftIssue";
+  state?: string | null;
   order: number;
 }
 
 interface BoardState {
   columns: Column[];
   cards: Card[];
+  projectTitle?: string;
+  projectUrl?: string;
+  lastUpdated?: string | null;
+  error?: string | null;
 }
 
-type LabelColor = {
-  [key: string]: string;
+// Map GitHub Projects status color enum → CSS color
+const COLUMN_COLOR_MAP: Record<string, string> = {
+  RED: "#da3633",
+  ORANGE: "#d18616",
+  YELLOW: "#d29922",
+  GREEN: "#3fb950",
+  BLUE: "#388bfd",
+  PURPLE: "#bc8cff",
+  PINK: "#f778ba",
+  GRAY: "#8b949e",
 };
 
-const LABEL_COLORS: LabelColor = {
-  feature: "#0075ca",
-  design: "#e4e669",
-  backend: "#d93f0b",
-  frontend: "#0052cc",
-  testing: "#e99695",
-  ops: "#5319e7",
-  bug: "#d73a4a",
-  docs: "#0075ca",
-  "": "#555",
-};
-
-const getLabelColor = (label: string): string =>
-  LABEL_COLORS[label] ?? "#555";
+const getColumnColor = (color?: string | null): string =>
+  color ? (COLUMN_COLOR_MAP[color] ?? "#8b949e") : "#8b949e";
 
 // ─── Socket ────────────────────────────────────────────────────────────────────
 
-const SOCKET_URL =
-  import.meta.env.VITE_SOCKET_URL ?? window.location.origin;
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? window.location.origin;
 
-// ─── Card Modal ───────────────────────────────────────────────────────────────
+// Locale for date/time display (Japanese)
+const DISPLAY_LOCALE = "ja-JP";
 
-interface CardModalProps {
-  card?: Card;
-  onSave: (data: Omit<Card, "id" | "columnId" | "order">) => void;
+// ─── Settings Modal ───────────────────────────────────────────────────────────
+
+interface SettingsModalProps {
+  currentProjectUrl: string;
+  onSave: (token: string, projectUrl: string) => Promise<void>;
   onClose: () => void;
+  saving: boolean;
+  saveError: string | null;
 }
 
-function CardModal({ card, onSave, onClose }: CardModalProps) {
-  const [title, setTitle] = useState(card?.title ?? "");
-  const [description, setDescription] = useState(card?.description ?? "");
-  const [label, setLabel] = useState(card?.label ?? "");
-  const [assignee, setAssignee] = useState(card?.assignee ?? "");
+function SettingsModal({ currentProjectUrl, onSave, onClose, saving, saveError }: SettingsModalProps) {
+  const [token, setToken] = useState("");
+  const [projectUrl, setProjectUrl] = useState(currentProjectUrl);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
-    onSave({ title: title.trim(), description, label, assignee });
+    if (!token.trim() && !projectUrl.trim()) return;
+    onSave(token.trim(), projectUrl.trim());
   };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="modal-title">{card ? "カードを編集" : "カードを追加"}</h3>
+        <h3 className="modal-title">⚙️ GitHub Project 設定</h3>
         <form onSubmit={handleSubmit}>
           <label className="modal-label">
-            タイトル *
+            GitHub Project URL
             <input
               className="modal-input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="カードのタイトル"
-              maxLength={200}
+              type="url"
+              value={projectUrl}
+              onChange={(e) => setProjectUrl(e.target.value)}
+              placeholder="https://github.com/orgs/YOUR_ORG/projects/1"
               required
               autoFocus
             />
+            <span className="modal-hint">
+              形式: https://github.com/orgs/ORG/projects/N または https://github.com/users/USER/projects/N
+            </span>
           </label>
           <label className="modal-label">
-            説明
-            <textarea
-              className="modal-textarea"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="詳細を入力..."
-              maxLength={1000}
-              rows={3}
+            GitHub Personal Access Token
+            <input
+              className="modal-input"
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="ghp_..."
+              autoComplete="off"
             />
+            <span className="modal-hint">
+              スコープ: <code>read:project</code>（プライベートリポジトリの場合は <code>repo</code> も必要）
+            </span>
           </label>
-          <div className="modal-row">
-            <label className="modal-label">
-              ラベル
-              <select
-                className="modal-select"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-              >
-                <option value="">なし</option>
-                <option value="feature">feature</option>
-                <option value="bug">bug</option>
-                <option value="design">design</option>
-                <option value="backend">backend</option>
-                <option value="frontend">frontend</option>
-                <option value="testing">testing</option>
-                <option value="ops">ops</option>
-                <option value="docs">docs</option>
-              </select>
-            </label>
-            <label className="modal-label">
-              担当者
-              <input
-                className="modal-input"
-                value={assignee}
-                onChange={(e) => setAssignee(e.target.value)}
-                placeholder="担当者名"
-                maxLength={100}
-              />
-            </label>
-          </div>
+          {saveError && <div className="modal-error">{saveError}</div>}
           <div className="modal-actions">
             <button type="button" className="btn btn-secondary" onClick={onClose}>
               キャンセル
             </button>
-            <button type="submit" className="btn btn-primary">
-              {card ? "保存" : "追加"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-// ─── Column Modal ─────────────────────────────────────────────────────────────
-
-interface ColumnModalProps {
-  onSave: (title: string) => void;
-  onClose: () => void;
-}
-
-function ColumnModal({ onSave, onClose }: ColumnModalProps) {
-  const [title, setTitle] = useState("");
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title.trim()) return;
-    onSave(title.trim());
-  };
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="modal-title">列を追加</h3>
-        <form onSubmit={handleSubmit}>
-          <label className="modal-label">
-            列タイトル *
-            <input
-              className="modal-input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="例: In Review"
-              maxLength={100}
-              required
-              autoFocus
-            />
-          </label>
-          <div className="modal-actions">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
-              キャンセル
-            </button>
-            <button type="submit" className="btn btn-primary">
-              追加
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              {saving ? "取得中…" : "保存して取得"}
             </button>
           </div>
         </form>
@@ -203,60 +144,92 @@ function ColumnModal({ onSave, onClose }: ColumnModalProps) {
 
 interface CardItemProps {
   card: Card;
-  index: number;
-  onEdit: (card: Card) => void;
-  onDelete: (id: string) => void;
 }
 
-function CardItem({ card, index, onEdit, onDelete }: CardItemProps) {
+const CONTENT_TYPE_ICON: Record<string, string> = {
+  Issue: "●",
+  PullRequest: "⬡",
+  DraftIssue: "◌",
+};
+
+const STATE_COLOR: Record<string, string> = {
+  OPEN: "#3fb950",
+  CLOSED: "#f85149",
+  MERGED: "#bc8cff",
+};
+
+function CardItem({ card }: CardItemProps) {
+  const typeIcon = CONTENT_TYPE_ICON[card.contentType ?? "DraftIssue"] ?? "◌";
+  const stateColor = card.state ? (STATE_COLOR[card.state] ?? "#8b949e") : undefined;
+
   return (
-    <Draggable draggableId={card.id} index={index}>
-      {(provided, snapshot) => (
-        <div
-          className={`card ${snapshot.isDragging ? "card--dragging" : ""}`}
-          ref={provided.innerRef}
-          {...provided.draggableProps}
-          {...provided.dragHandleProps}
+    <div className="card">
+      <div className="card-meta">
+        <span
+          className="card-type-icon"
+          style={{ color: stateColor ?? "#8b949e" }}
+          title={card.state ?? card.contentType}
         >
-          {card.label && (
+          {typeIcon}
+        </span>
+        {card.number != null && (
+          <span className="card-number">#{card.number}</span>
+        )}
+        {card.url && (
+          <a
+            className="card-link"
+            href={card.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="GitHubで開く"
+            onClick={(e) => e.stopPropagation()}
+          >
+            ↗
+          </a>
+        )}
+      </div>
+
+      <div className="card-title">{card.title}</div>
+
+      {card.description && (
+        <div className="card-description">{card.description}</div>
+      )}
+
+      {card.labels.length > 0 && (
+        <div className="card-labels">
+          {card.labels.map((lbl) => (
             <span
+              key={lbl.name}
               className="card-label"
-              style={{ backgroundColor: getLabelColor(card.label) }}
+              style={{ backgroundColor: lbl.color }}
             >
-              {card.label}
+              {lbl.name}
             </span>
-          )}
-          <div className="card-title">{card.title}</div>
-          {card.description && (
-            <div className="card-description">{card.description}</div>
-          )}
-          {card.assignee && (
-            <div className="card-assignee">
-              <span className="card-avatar">
-                {card.assignee.charAt(0).toUpperCase()}
-              </span>
-              {card.assignee}
-            </div>
-          )}
-          <div className="card-actions">
-            <button
-              className="card-btn"
-              onClick={() => onEdit(card)}
-              title="編集"
-            >
-              ✏️
-            </button>
-            <button
-              className="card-btn card-btn--danger"
-              onClick={() => onDelete(card.id)}
-              title="削除"
-            >
-              🗑️
-            </button>
-          </div>
+          ))}
         </div>
       )}
-    </Draggable>
+
+      {card.assignees.length > 0 && (
+        <div className="card-assignees">
+          {card.assignees.map((a) => (
+            <span key={a.login} className="card-assignee-item" title={a.login}>
+              {a.avatarUrl ? (
+                <img
+                  className="card-avatar"
+                  src={a.avatarUrl}
+                  alt={a.login}
+                  loading="lazy"
+                />
+              ) : (
+                <span className="card-avatar card-avatar--fallback">
+                  {a.login.charAt(0).toUpperCase()}
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -265,58 +238,28 @@ function CardItem({ card, index, onEdit, onDelete }: CardItemProps) {
 interface ColumnItemProps {
   column: Column;
   cards: Card[];
-  onAddCard: (columnId: string) => void;
-  onEditCard: (card: Card) => void;
-  onDeleteCard: (id: string) => void;
-  onDeleteColumn: (id: string) => void;
 }
 
-function ColumnItem({
-  column,
-  cards,
-  onAddCard,
-  onEditCard,
-  onDeleteCard,
-  onDeleteColumn,
-}: ColumnItemProps) {
+function ColumnItem({ column, cards }: ColumnItemProps) {
+  const sortedCards = [...cards].sort((a, b) => a.order - b.order);
+  const colColor = getColumnColor(column.color);
+
   return (
     <div className="column">
       <div className="column-header">
+        <span
+          className="column-status-dot"
+          style={{ backgroundColor: colColor }}
+          title={column.color ?? undefined}
+        />
         <span className="column-title">{column.title}</span>
         <span className="column-count">{cards.length}</span>
-        <button
-          className="column-delete-btn"
-          onClick={() => onDeleteColumn(column.id)}
-          title="列を削除"
-        >
-          ✕
-        </button>
       </div>
-      <Droppable droppableId={column.id}>
-        {(provided, snapshot) => (
-          <div
-            className={`card-list ${snapshot.isDraggingOver ? "card-list--over" : ""}`}
-            ref={provided.innerRef}
-            {...provided.droppableProps}
-          >
-            {cards
-              .sort((a, b) => a.order - b.order)
-              .map((card, index) => (
-                <CardItem
-                  key={card.id}
-                  card={card}
-                  index={index}
-                  onEdit={onEditCard}
-                  onDelete={onDeleteCard}
-                />
-              ))}
-            {provided.placeholder}
-          </div>
-        )}
-      </Droppable>
-      <button className="add-card-btn" onClick={() => onAddCard(column.id)}>
-        + カードを追加
-      </button>
+      <div className="card-list">
+        {sortedCards.map((card) => (
+          <CardItem key={card.id} card={card} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -345,7 +288,7 @@ function useAutoScroll(
     if (!el) return;
 
     let lastTime = 0;
-    const PAUSE_MS = 1500; // pause at edges
+    const PAUSE_MS = 1500;
     let pauseUntil = 0;
 
     const step = (timestamp: number) => {
@@ -370,7 +313,7 @@ function useAutoScroll(
 
       const delta = timestamp - lastTime;
       lastTime = timestamp;
-      const move = (speedPx * delta) / 16; // normalize to ~60fps
+      const move = (speedPx * delta) / 16;
       el.scrollLeft += directionRef.current * move;
 
       animFrameRef.current = requestAnimationFrame(step);
@@ -388,13 +331,8 @@ function useAutoScroll(
     };
   }, [boardRef, enabled, speedPx]);
 
-  // Pause on hover
-  const handleMouseEnter = useCallback(() => {
-    pauseRef.current = true;
-  }, []);
-  const handleMouseLeave = useCallback(() => {
-    pauseRef.current = false;
-  }, []);
+  const handleMouseEnter = useCallback(() => { pauseRef.current = true; }, []);
+  const handleMouseLeave = useCallback(() => { pauseRef.current = false; }, []);
 
   return { handleMouseEnter, handleMouseLeave };
 }
@@ -404,15 +342,12 @@ function useAutoScroll(
 export default function App() {
   const [board, setBoard] = useState<BoardState>({ columns: [], cards: [] });
   const [connected, setConnected] = useState(false);
-  const [connectedUsers, setConnectedUsers] = useState(1);
-  const [cardModal, setCardModal] = useState<{
-    open: boolean;
-    card?: Card;
-    columnId: string;
-  }>({ open: false, columnId: "" });
-  const [columnModal, setColumnModal] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [scrollSpeed, setScrollSpeed] = useState(0.8);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const boardRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -433,37 +368,12 @@ export default function App() {
       setBoard({ ...state });
     });
 
-    socket.on("card:added", (card: Card) => {
-      setBoard((prev) => ({ ...prev, cards: [...prev.cards, card] }));
+    socket.on("board:error", ({ error }: { error: string }) => {
+      setBoard((prev) => ({ ...prev, error }));
     });
-
-    socket.on("card:edited", (updated: Card) => {
-      setBoard((prev) => ({
-        ...prev,
-        cards: prev.cards.map((c) => (c.id === updated.id ? updated : c)),
-      }));
-    });
-
-    socket.on("card:deleted", ({ id }: { id: string }) => {
-      setBoard((prev) => ({
-        ...prev,
-        cards: prev.cards.filter((c) => c.id !== id),
-      }));
-    });
-
-    // Poll connected user count
-    const pollUsers = () => {
-      fetch("/api/health")
-        .then((r) => r.json())
-        .then((d) => setConnectedUsers(d.connectedUsers))
-        .catch(() => {});
-    };
-    const interval = setInterval(pollUsers, 5000);
-    pollUsers();
 
     return () => {
       socket.disconnect();
-      clearInterval(interval);
     };
   }, []);
 
@@ -474,120 +384,47 @@ export default function App() {
     scrollSpeed
   );
 
-  // ── Drag & drop handler ───────────────────────────────────────────────────
-  const onDragEnd = useCallback(
-    (result: DropResult) => {
-      const { source, destination, draggableId } = result;
-      if (!destination) return;
-      if (
-        source.droppableId === destination.droppableId &&
-        source.index === destination.index
-      )
-        return;
-
-      const socket = socketRef.current;
-      if (!socket) return;
-
-      if (source.droppableId === destination.droppableId) {
-        // Reorder within same column
-        const colCards = board.cards
-          .filter((c) => c.columnId === source.droppableId)
-          .sort((a, b) => a.order - b.order);
-
-        const reordered = [...colCards];
-        const [moved] = reordered.splice(source.index, 1);
-        reordered.splice(destination.index, 0, moved);
-
-        socket.emit("card:reorder", {
-          columnId: source.droppableId,
-          orderedIds: reordered.map((c) => c.id),
-        });
-
-        // Optimistic update
-        setBoard((prev) => {
-          const others = prev.cards.filter(
-            (c) => c.columnId !== source.droppableId
-          );
-          return {
-            ...prev,
-            cards: [
-              ...others,
-              ...reordered.map((c, idx) => ({ ...c, order: idx })),
-            ],
-          };
-        });
+  // ── Settings save ─────────────────────────────────────────────────────────
+  const handleSaveSettings = async (token: string, projectUrl: string) => {
+    setSettingsSaving(true);
+    setSettingsError(null);
+    try {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, projectUrl }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setSettingsError(data.error);
       } else {
-        // Move to different column
-        const destCards = board.cards
-          .filter((c) => c.columnId === destination.droppableId)
-          .sort((a, b) => a.order - b.order);
-
-        socket.emit("card:move", {
-          id: draggableId,
-          toColumnId: destination.droppableId,
-          newOrder: destination.index,
-        });
-
-        // Optimistic update
-        setBoard((prev) => {
-          const cards = prev.cards.map((c) => {
-            if (c.id === draggableId) {
-              return { ...c, columnId: destination.droppableId, order: destination.index };
-            }
-            if (
-              c.columnId === destination.droppableId &&
-              c.order >= destination.index
-            ) {
-              return { ...c, order: c.order + 1 };
-            }
-            return c;
-          });
-          return { ...prev, cards };
-        });
+        setSettingsOpen(false);
       }
-    },
-    [board.cards]
-  );
-
-  // ── Card CRUD ─────────────────────────────────────────────────────────────
-  const openAddCard = (columnId: string) => {
-    setCardModal({ open: true, columnId });
-  };
-
-  const openEditCard = (card: Card) => {
-    setCardModal({ open: true, card, columnId: card.columnId });
-  };
-
-  const handleSaveCard = (data: Omit<Card, "id" | "columnId" | "order">) => {
-    const socket = socketRef.current;
-    if (!socket) return;
-
-    if (cardModal.card) {
-      socket.emit("card:edit", { id: cardModal.card.id, ...data });
-    } else {
-      socket.emit("card:add", { columnId: cardModal.columnId, ...data });
+    } catch {
+      setSettingsError("サーバーへの接続に失敗しました");
+    } finally {
+      setSettingsSaving(false);
     }
-    setCardModal({ open: false, columnId: "" });
   };
 
-  const handleDeleteCard = (id: string) => {
-    if (!window.confirm("このカードを削除しますか?")) return;
-    socketRef.current?.emit("card:delete", { id });
-  };
-
-  // ── Column CRUD ───────────────────────────────────────────────────────────
-  const handleAddColumn = (title: string) => {
-    socketRef.current?.emit("column:add", { title });
-    setColumnModal(false);
-  };
-
-  const handleDeleteColumn = (id: string) => {
-    if (!window.confirm("この列（含むカード全て）を削除しますか?")) return;
-    socketRef.current?.emit("column:delete", { id });
+  // ── Manual refresh ────────────────────────────────────────────────────────
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await fetch("/api/refresh", { method: "POST" });
+    } catch {
+      // ignore; board:error event will update the UI
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
   const sortedColumns = [...board.columns].sort((a, b) => a.order - b.order);
+  const isConfigured = board.columns.length > 0 || board.projectTitle;
+  const lastUpdatedText = board.lastUpdated
+    ? new Date(board.lastUpdated).toLocaleString(DISPLAY_LOCALE)
+    : null;
 
   return (
     <div className="app">
@@ -595,12 +432,29 @@ export default function App() {
       <header className="header">
         <div className="header-left">
           <span className="header-logo">📋</span>
-          <h1 className="header-title">Kanban Board</h1>
+          {board.projectTitle ? (
+            board.projectUrl ? (
+              <a
+                className="header-title header-title--link"
+                href={board.projectUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {board.projectTitle}
+              </a>
+            ) : (
+              <h1 className="header-title">{board.projectTitle}</h1>
+            )
+          ) : (
+            <h1 className="header-title">GitHub Kanban Viewer</h1>
+          )}
           <span className={`status-dot ${connected ? "status-dot--online" : "status-dot--offline"}`} />
-          <span className="status-text">
-            {connected ? "接続中" : "切断"}
-          </span>
-          <span className="user-count">👥 {connectedUsers}</span>
+          <span className="status-text">{connected ? "接続中" : "切断"}</span>
+          {lastUpdatedText && (
+            <span className="last-updated" title={`最終取得: ${lastUpdatedText}`}>
+              🕐 {lastUpdatedText}
+            </span>
+          )}
         </div>
         <div className="header-right">
           <label className="autoscroll-toggle">
@@ -625,56 +479,79 @@ export default function App() {
               />
             </label>
           )}
-          <button className="btn btn-primary" onClick={() => setColumnModal(true)}>
-            + 列を追加
+          <button
+            className="btn btn-secondary"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="GitHubから再取得"
+          >
+            {refreshing ? "⟳ 取得中…" : "⟳ 更新"}
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => { setSettingsError(null); setSettingsOpen(true); }}
+            title="GitHub Project を設定"
+          >
+            ⚙️ 設定
           </button>
         </div>
       </header>
 
-      {/* ── Board ──────────────────────────────────────────────────────── */}
-      <DragDropContext onDragEnd={onDragEnd}>
-        <div
-          className="board"
-          ref={boardRef}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
-        >
-          {sortedColumns.map((column) => {
-            const colCards = board.cards.filter(
-              (c) => c.columnId === column.id
-            );
-            return (
-              <ColumnItem
-                key={column.id}
-                column={column}
-                cards={colCards}
-                onAddCard={openAddCard}
-                onEditCard={openEditCard}
-                onDeleteCard={handleDeleteCard}
-                onDeleteColumn={handleDeleteColumn}
-              />
-            );
-          })}
-          {sortedColumns.length === 0 && (
-            <div className="empty-board">
-              <p>列がありません。「+ 列を追加」から始めましょう。</p>
-            </div>
+      {/* ── Error / Setup banner ────────────────────────────────────────── */}
+      {board.error && (
+        <div className="error-banner">
+          ⚠️ {board.error}
+          {!isConfigured && (
+            <button
+              className="btn btn-primary error-banner-btn"
+              onClick={() => { setSettingsError(null); setSettingsOpen(true); }}
+            >
+              ⚙️ 設定する
+            </button>
           )}
         </div>
-      </DragDropContext>
-
-      {/* ── Modals ─────────────────────────────────────────────────────── */}
-      {cardModal.open && (
-        <CardModal
-          card={cardModal.card}
-          onSave={handleSaveCard}
-          onClose={() => setCardModal({ open: false, columnId: "" })}
-        />
       )}
-      {columnModal && (
-        <ColumnModal
-          onSave={handleAddColumn}
-          onClose={() => setColumnModal(false)}
+
+      {/* ── Board ──────────────────────────────────────────────────────── */}
+      <div
+        className="board"
+        ref={boardRef}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        {sortedColumns.map((column) => {
+          const colCards = board.cards.filter((c) => c.columnId === column.id);
+          return (
+            <ColumnItem
+              key={column.id}
+              column={column}
+              cards={colCards}
+            />
+          );
+        })}
+        {sortedColumns.length === 0 && !board.error && (
+          <div className="empty-board">
+            <div className="empty-board-content">
+              <p>GitHub Project が設定されていません。</p>
+              <button
+                className="btn btn-primary"
+                onClick={() => { setSettingsError(null); setSettingsOpen(true); }}
+              >
+                ⚙️ 設定する
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Settings Modal ──────────────────────────────────────────────── */}
+      {settingsOpen && (
+        <SettingsModal
+          currentProjectUrl={board.projectUrl ?? ""}
+          onSave={handleSaveSettings}
+          onClose={() => setSettingsOpen(false)}
+          saving={settingsSaving}
+          saveError={settingsError}
         />
       )}
     </div>
