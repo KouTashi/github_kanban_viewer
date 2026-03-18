@@ -75,20 +75,22 @@ const DISPLAY_LOCALE = "ja-JP";
 
 interface SettingsModalProps {
   currentProjectUrl: string;
-  onSave: (token: string, projectUrl: string) => Promise<void>;
+  currentPollIntervalMin: number;
+  onSave: (token: string, projectUrl: string, pollIntervalMin: number) => Promise<void>;
   onClose: () => void;
   saving: boolean;
   saveError: string | null;
 }
 
-function SettingsModal({ currentProjectUrl, onSave, onClose, saving, saveError }: SettingsModalProps) {
+function SettingsModal({ currentProjectUrl, currentPollIntervalMin, onSave, onClose, saving, saveError }: SettingsModalProps) {
   const [token, setToken] = useState("");
   const [projectUrl, setProjectUrl] = useState(currentProjectUrl);
+  const [pollIntervalMin, setPollIntervalMin] = useState(currentPollIntervalMin);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!token.trim() && !projectUrl.trim()) return;
-    onSave(token.trim(), projectUrl.trim());
+    onSave(token.trim(), projectUrl.trim(), pollIntervalMin);
   };
 
   return (
@@ -123,6 +125,21 @@ function SettingsModal({ currentProjectUrl, onSave, onClose, saving, saveError }
             />
             <span className="modal-hint">
               スコープ: <code>read:project</code>（プライベートリポジトリの場合は <code>repo</code> も必要）
+            </span>
+          </label>
+          <label className="modal-label">
+            自動更新頻度（分）
+            <input
+              className="modal-input"
+              type="number"
+              min={0.5}
+              max={60}
+              step={0.5}
+              value={pollIntervalMin}
+              onChange={(e) => setPollIntervalMin(Number(e.target.value))}
+            />
+            <span className="modal-hint">
+              GitHubから自動で再取得する間隔を分単位で指定します（最小 0.5 分）
             </span>
           </label>
           {saveError && <div className="modal-error">{saveError}</div>}
@@ -348,11 +365,21 @@ export default function App() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [pollIntervalMin, setPollIntervalMin] = useState(5);
 
   const boardRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
 
   // ── Socket setup ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.pollIntervalMs) setPollIntervalMin(data.pollIntervalMs / 60000);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     const socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
     socketRef.current = socket;
@@ -385,19 +412,20 @@ export default function App() {
   );
 
   // ── Settings save ─────────────────────────────────────────────────────────
-  const handleSaveSettings = async (token: string, projectUrl: string) => {
+  const handleSaveSettings = async (token: string, projectUrl: string, newPollIntervalMin: number) => {
     setSettingsSaving(true);
     setSettingsError(null);
     try {
       const res = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, projectUrl }),
+        body: JSON.stringify({ token, projectUrl, pollIntervalMs: Math.round(newPollIntervalMin * 60000) }),
       });
       const data = await res.json();
       if (data.error) {
         setSettingsError(data.error);
       } else {
+        setPollIntervalMin(newPollIntervalMin);
         setSettingsOpen(false);
       }
     } catch {
@@ -471,7 +499,7 @@ export default function App() {
               <input
                 type="range"
                 min={0.2}
-                max={3}
+                max={10}
                 step={0.1}
                 value={scrollSpeed}
                 onChange={(e) => setScrollSpeed(Number(e.target.value))}
@@ -548,6 +576,7 @@ export default function App() {
       {settingsOpen && (
         <SettingsModal
           currentProjectUrl={board.projectUrl ?? ""}
+          currentPollIntervalMin={pollIntervalMin}
           onSave={handleSaveSettings}
           onClose={() => setSettingsOpen(false)}
           saving={settingsSaving}
