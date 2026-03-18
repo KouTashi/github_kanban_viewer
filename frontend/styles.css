@@ -41,6 +41,9 @@ body,
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Visible left/right border so window boundaries are clear when two windows
+     are placed side-by-side in the browser */
+  box-shadow: inset 4px 0 0 #444c56, inset -4px 0 0 #444c56;
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────── */
