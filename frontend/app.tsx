@@ -68,6 +68,14 @@ const getColumnColor = (color?: string | null): string =>
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? window.location.origin;
 
+// ─── Scroll sync ───────────────────────────────────────────────────────────────
+
+const SCROLL_CHANNEL_NAME = "kanban-scroll-sync";
+const TAB_ID =
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+
 // Locale for date/time display (Japanese)
 const DISPLAY_LOCALE = "ja-JP";
 
@@ -285,14 +293,59 @@ function ColumnItem({ column, cards }: ColumnItemProps) {
 
 // ─── Auto-scroll Hook ─────────────────────────────────────────────────────────
 
+interface ScrollSyncMessage {
+  tabId: string;
+  scrollLeft: number;
+  direction: 1 | -1;
+}
+
 function useAutoScroll(
   boardRef: React.RefObject<HTMLDivElement | null>,
   enabled: boolean,
-  speedPx: number = 1
+  speedPx: number = 1,
+  syncScroll: boolean = false
 ) {
   const animFrameRef = useRef<number | null>(null);
   const directionRef = useRef<1 | -1>(1);
   const pauseRef = useRef(false);
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  // When following another tab, we pause local animation and mirror their scroll
+  const followingRef = useRef(false);
+  const lastLeaderMsgRef = useRef(0);
+
+  // BroadcastChannel setup for cross-tab sync
+  useEffect(() => {
+    if (!enabled || !syncScroll || typeof BroadcastChannel === "undefined") {
+      channelRef.current?.close();
+      channelRef.current = null;
+      followingRef.current = false;
+      return;
+    }
+
+    const channel = new BroadcastChannel(SCROLL_CHANNEL_NAME);
+    channelRef.current = channel;
+
+    channel.onmessage = (e: MessageEvent<ScrollSyncMessage>) => {
+      if (e.data.tabId === TAB_ID) return;
+      // Another tab is leading: follow it
+      followingRef.current = true;
+      lastLeaderMsgRef.current = Date.now();
+      directionRef.current = e.data.direction;
+      if (boardRef.current) {
+        // Only apply if the difference is meaningful (reduces unnecessary DOM writes)
+        const diff = Math.abs(boardRef.current.scrollLeft - e.data.scrollLeft);
+        if (diff > 1) {
+          boardRef.current.scrollLeft = e.data.scrollLeft;
+        }
+      }
+    };
+
+    return () => {
+      channel.close();
+      channelRef.current = null;
+      followingRef.current = false;
+    };
+  }, [enabled, syncScroll, boardRef]);
 
   useEffect(() => {
     if (!enabled) {
@@ -309,10 +362,27 @@ function useAutoScroll(
     let lastTime = 0;
     const PAUSE_MS = 1500;
     let pauseUntil = 0;
+    // If no leader message arrives within this threshold (+ a per-tab stagger to
+    // prevent multiple followers all claiming leadership at the same moment),
+    // take over as leader.
+    const tabStagger =
+      (parseInt(TAB_ID.replace(/[^0-9a-f]/gi, "0").slice(-4), 16) % 300);
+    const LEADER_TIMEOUT_MS = 500 + tabStagger;
 
     const step = (timestamp: number) => {
       if (!boardRef.current) return;
       const el = boardRef.current;
+
+      // While following another tab's scroll and still receiving updates, skip local animation
+      if (followingRef.current && syncScroll) {
+        const elapsed = Date.now() - lastLeaderMsgRef.current;
+        if (elapsed < LEADER_TIMEOUT_MS) {
+          animFrameRef.current = requestAnimationFrame(step);
+          return;
+        }
+        // Leader gone – resume as local leader
+        followingRef.current = false;
+      }
 
       if (timestamp < pauseUntil || pauseRef.current) {
         animFrameRef.current = requestAnimationFrame(step);
@@ -335,6 +405,15 @@ function useAutoScroll(
       const move = (speedPx * delta) / 16;
       el.scrollLeft += directionRef.current * move;
 
+      // Broadcast scroll state so other tabs can follow
+      if (syncScroll && channelRef.current) {
+        channelRef.current.postMessage({
+          tabId: TAB_ID,
+          scrollLeft: el.scrollLeft,
+          direction: directionRef.current,
+        } satisfies ScrollSyncMessage);
+      }
+
       animFrameRef.current = requestAnimationFrame(step);
     };
 
@@ -348,7 +427,7 @@ function useAutoScroll(
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, [boardRef, enabled, speedPx]);
+  }, [boardRef, enabled, speedPx, syncScroll]);
 
   const handleMouseEnter = useCallback(() => { pauseRef.current = true; }, []);
   const handleMouseLeave = useCallback(() => { pauseRef.current = false; }, []);
@@ -363,6 +442,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [scrollSpeed, setScrollSpeed] = useState(0.8);
+  const [syncScroll, setSyncScroll] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -410,7 +490,8 @@ export default function App() {
   const { handleMouseEnter, handleMouseLeave } = useAutoScroll(
     boardRef,
     autoScroll,
-    scrollSpeed
+    scrollSpeed,
+    syncScroll
   );
 
   // ── Settings save ─────────────────────────────────────────────────────────
@@ -507,6 +588,16 @@ export default function App() {
                 onChange={(e) => setScrollSpeed(Number(e.target.value))}
                 className="speed-slider"
               />
+            </label>
+          )}
+          {autoScroll && (
+            <label className="autoscroll-toggle">
+              <input
+                type="checkbox"
+                checked={syncScroll}
+                onChange={(e) => setSyncScroll(e.target.checked)}
+              />
+              同期スクロール
             </label>
           )}
           <button
