@@ -1,0 +1,51 @@
+# Example: run multiple instances of GitHub Kanban Viewer,
+# each on its own port and pointing to a different GitHub project.
+#
+# Copy this file, then edit the environment variables for each service.
+# For sensitive values (GITHUB_TOKEN), use an .env file instead of
+# hard-coding them here:
+#   1. Create a file named .env in the same directory as this file
+#   2. Add: PROJECT1_TOKEN=ghp_your_token_here
+#           PROJECT2_TOKEN=ghp_your_other_token_here
+#   3. Reference them with ${PROJECT1_TOKEN} / ${PROJECT2_TOKEN} below
+#
+# Start all instances:   docker compose up -d
+# Stop all instances:    docker compose down
+#
+# Each service is self-contained: the backend serves the frontend on the same
+# port, so opening http://localhost:<PORT> in a browser shows that project's
+# Kanban board.
+
+services:
+  project1:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      GITHUB_TOKEN: ${PROJECT1_TOKEN:-ghp_your_token_here}
+      GITHUB_PROJECT_URL: https://github.com/orgs/YOUR_ORG/projects/1
+      # POLL_INTERVAL_MS: 300000
+    restart: unless-stopped
+
+  project2:
+    build: .
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      GITHUB_TOKEN: ${PROJECT2_TOKEN:-ghp_your_token_here}
+      GITHUB_PROJECT_URL: https://github.com/orgs/YOUR_ORG/projects/2
+      # POLL_INTERVAL_MS: 300000
+    restart: unless-stopped
+
+  # Add more services here as needed:
+  # project3:
+  #   build: .
+  #   ports:
+  #     - "3003:3003"
+  #   environment:
+  #     PORT: 3003
+  #     GITHUB_TOKEN: ${PROJECT3_TOKEN:-ghp_your_token_here}
+  #     GITHUB_PROJECT_URL: https://github.com/users/YOUR_USER/projects/1
+  #   restart: unless-stopped

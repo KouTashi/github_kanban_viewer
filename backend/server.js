@@ -2,6 +2,8 @@ const express = require("express");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
 
 const app = express();
 const httpServer = createServer(app);
@@ -336,6 +338,21 @@ app.post("/api/refresh", async (_req, res) => {
   await fetchGitHubProject();
   res.json({ ok: true, error: fetchError, lastUpdated });
 });
+
+// ─── Serve frontend static files ──────────────────────────────────────────────
+// When the production frontend build exists, serve it so that each backend
+// instance (on its own port) is completely self-contained.
+
+const FRONTEND_DIST = path.join(__dirname, "../frontend/dist");
+if (fs.existsSync(FRONTEND_DIST)) {
+  app.use(express.static(FRONTEND_DIST));
+  // Read index.html once at startup so the catch-all handler avoids
+  // per-request file system access.
+  const indexHtml = fs.readFileSync(path.join(FRONTEND_DIST, "index.html"));
+  app.get(/^(?!\/api).*$/, (_req, res) => {
+    res.type("html").send(indexHtml);
+  });
+}
 
 // ─── Socket.io event handling ─────────────────────────────────────────────────
 
