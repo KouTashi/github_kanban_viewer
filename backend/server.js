@@ -324,7 +324,7 @@ app.post("/api/config", async (req, res) => {
     const parsed = parseInt(String(newInterval), 10);
     if (!isNaN(parsed) && parsed >= 5000) {
       pollIntervalMs = parsed;
-      if (pollTimerHandle !== null) clearInterval(pollTimerHandle);
+      clearInterval(pollTimerHandle);
       pollTimerHandle = setInterval(fetchGitHubProject, pollIntervalMs);
     }
   }

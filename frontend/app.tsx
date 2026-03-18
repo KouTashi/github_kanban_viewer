@@ -71,6 +71,8 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? window.location.origin;
 // Locale for date/time display (Japanese)
 const DISPLAY_LOCALE = "ja-JP";
 
+const MS_PER_MINUTE = 60000;
+
 // ─── Settings Modal ───────────────────────────────────────────────────────────
 
 interface SettingsModalProps {
@@ -375,7 +377,7 @@ export default function App() {
     fetch("/api/config")
       .then((r) => r.json())
       .then((data) => {
-        if (data.pollIntervalMs) setPollIntervalMin(data.pollIntervalMs / 60000);
+        if (data.pollIntervalMs) setPollIntervalMin(data.pollIntervalMs / MS_PER_MINUTE);
       })
       .catch(() => {});
   }, []);
@@ -419,7 +421,7 @@ export default function App() {
       const res = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, projectUrl, pollIntervalMs: Math.round(newPollIntervalMin * 60000) }),
+        body: JSON.stringify({ token, projectUrl, pollIntervalMs: Math.round(newPollIntervalMin * MS_PER_MINUTE) }),
       });
       const data = await res.json();
       if (data.error) {
